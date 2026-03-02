@@ -17,6 +17,23 @@ def validate_and_fix_prices(prices: dict[str, float]) -> dict:
     fixed = prices.copy()
     issues = []
 
+    # Summary of approach:
+    # 1) Sanitize input lightly (missing/invalid/non-positive values).
+    # 2) For each product group (Limited Casco, Casco), repair deductible ordering
+    #    by evaluating multiple candidate corrections and choosing the smallest
+    #    proportional change that preserves business ratios.
+    # 3) Enforce product hierarchy floors:
+    #       Limited Casco_* > mtpl
+    #       Casco_100 > Limited Casco_100,
+    #       Casco_200 > Limited Casco_200,
+    #       Casco_500 > Limited Casco_500
+    #    then re-balance deductible order if floors introduce conflicts.
+    # 4) Keep input as ground truth and avoid global optimization across products.
+    #    For that reason, extreme outlier scenarios (e.g., very high mtpl where
+    #    lowering mtpl could reduce total edits) are intentionally left out of scope.
+    #    Cross-product inversions (Limited Casco > Casco on same deductible) are
+    #    still corrected through hierarchy floor enforcement.
+
     epsilon = 0.01
     target_200_100 = 0.85
     target_500_100 = 0.80
