@@ -31,16 +31,20 @@ def validate_and_fix_prices(prices: dict[str, float]) -> dict:
     )
     for key in expected_keys:
         if key not in fixed:
-            issues.append(f"Missing key {key}; related checks were skipped.")
+            issues.append(f"Missing key {key}; checks for this field were skipped.")
             continue
         try:
             numeric_value = float(fixed[key])
         except (TypeError, ValueError):
-            issues.append(f"Invalid value for {key}; replaced with {epsilon:.2f}.")
+            issues.append(
+                f"Invalid value for {key}; replaced with minimum allowed positive value ({epsilon:.2f})."
+            )
             fixed[key] = epsilon
             continue
         if numeric_value <= 0:
-            issues.append(f"Non-positive value for {key}; replaced with {epsilon:.2f}.")
+            issues.append(
+                f"Non-positive value for {key}; replaced with minimum allowed positive value ({epsilon:.2f})."
+            )
             fixed[key] = epsilon
         else:
             fixed[key] = round_money(numeric_value)
@@ -53,9 +57,6 @@ def validate_and_fix_prices(prices: dict[str, float]) -> dict:
             issues.append(
                 f"Adjusted {key} from {old_value:.2f} to {rounded_new_value:.2f}: {reason}"
             )
-
-    def is_strict_order(p100: float, p200: float, p500: float) -> bool:
-        return p100 > p200 > p500
 
     def relative_change(old_value: float, new_value: float) -> float:
         denominator = max(abs(old_value), epsilon)
@@ -75,6 +76,9 @@ def validate_and_fix_prices(prices: dict[str, float]) -> dict:
             return None
         return min(max(value, lower), upper)
 
+    def product_label(prefix: str) -> str:
+        return {"limited_casco": "Limited Casco", "casco": "Casco"}.get(prefix, prefix)
+
     def apply_floors(
         p100: float,
         p200: float,
@@ -88,30 +92,37 @@ def validate_and_fix_prices(prices: dict[str, float]) -> dict:
             round_money(max(p500, f500)),
         )
 
-    def choose_option(
+    def choose_candidate(
         current: tuple[float, float, float],
-        options: list[tuple[str, tuple[float, float, float] | None]],
+        candidates: list[tuple[str, tuple[float, float, float] | None]],
     ) -> tuple[str, tuple[float, float, float]] | None:
         p100, p200, p500 = current
-        key_to_old = {"p100": p100, "p200": p200, "p500": p500}
-
-        best_option = None
+        best = None
         best_score = float("inf")
 
-        for changed_key, values in options:
+        for reason, values in candidates:
             if values is None:
                 continue
             n100, n200, n500 = values
-            if not is_strict_order(n100, n200, n500):
+            if not (n100 > n200 > n500):
                 continue
-            base_old = key_to_old[changed_key]
-            base_new = {"p100": n100, "p200": n200, "p500": n500}[changed_key]
-            score = relative_change(base_old, base_new) + 0.2 * order_error(n100, n200, n500)
+
+            changed_count = int(round_money(n100) != round_money(p100))
+            changed_count += int(round_money(n200) != round_money(p200))
+            changed_count += int(round_money(n500) != round_money(p500))
+
+            change_cost = (
+                relative_change(p100, n100)
+                + relative_change(p200, n200)
+                + relative_change(p500, n500)
+            )
+            score = change_cost + 0.2 * order_error(n100, n200, n500) + 0.03 * changed_count
+
             if score < best_score:
                 best_score = score
-                best_option = (changed_key, values)
+                best = (reason, values)
 
-        return best_option
+        return best
 
     def fallback_repair(
         p100: float,
@@ -153,6 +164,7 @@ def validate_and_fix_prices(prices: dict[str, float]) -> dict:
         k100 = f"{prefix}_100"
         k200 = f"{prefix}_200"
         k500 = f"{prefix}_500"
+        label = product_label(prefix)
 
         if k100 not in fixed or k200 not in fixed or k500 not in fixed:
             return
@@ -167,91 +179,52 @@ def validate_and_fix_prices(prices: dict[str, float]) -> dict:
         new_values = start_values
         reason = ""
 
-        if is_strict_order(p100, p200, p500):
-            reason = ""
+        if not (p100 > p200 > p500):
+            c200_down = clamp(min(p100 - epsilon, p500 / target_500_200), p500 + epsilon, p100 - epsilon)
+            c200_up = clamp(p500 / target_500_200, p500 + epsilon, p100 - epsilon)
+            c500_guide = clamp(guide_500, -float("inf"), p200 - epsilon)
+            c500_down = clamp(p200 - epsilon, -float("inf"), p200 - epsilon)
 
-        elif p100 < p200 < p500:
-            new_values = (p500, p200, p100)
-            reason = f"{prefix} prices were strictly ascending; swapped 100€ and 500€ to restore deductible order."
+            candidates = [
+                (
+                    f"{label}: swapped 100€ and 500€ deductible prices to restore correct deductible order (100€ > 200€ > 500€).",
+                    (p500, p200, p100),
+                ),
+                (
+                    f"{label}: increased 100€ deductible price to keep it above 200€ and preserve deductible order.",
+                    (max(guide_100, p200 + epsilon), p200, p500),
+                ),
+                (
+                    f"{label}: decreased 500€ deductible price to keep it below 200€ and preserve deductible order.",
+                    None if c500_guide is None else (p100, p200, c500_guide),
+                ),
+                (
+                    f"{label}: decreased 200€ deductible price to restore deductible order with minimal proportional change.",
+                    None if c200_down is None else (p100, c200_down, p500),
+                ),
+                (
+                    f"{label}: increased 200€ deductible price to restore deductible order with minimal proportional change.",
+                    None if c200_up is None else (p100, c200_up, p500),
+                ),
+                (
+                    f"{label}: adjusted 200€ and 500€ deductible prices to better match expected deductible relationships.",
+                    (p100, guide_200, guide_500),
+                ),
+                (
+                    f"{label}: set 500€ deductible price just below 200€ to restore strict order.",
+                    None if c500_down is None else (p100, p200, c500_down),
+                ),
+            ]
 
-        elif p100 < p200 and p200 > p500 and p100 < p500:
-            new_p100 = max(guide_100, p200 + epsilon)
-            new_values = (new_p100, p200, p500)
-            reason = (
-                f"{prefix}: 100€ deductible price was not above 200€; "
-                "raised 100€ using deductible ratio guide."
-            )
-
-        elif p100 > p200 and p200 < p500 and p100 < p500:
-            new_p500 = min(guide_500, p200 - epsilon)
-            candidate = (p100, p200, new_p500)
-            if is_strict_order(*candidate):
-                new_values = candidate
-                reason = (
-                    f"{prefix}: 500€ deductible price was not below 200€; "
-                    "lowered 500€ using deductible ratio guide."
-                )
-
-        elif p100 < p200 and p200 > p500 and p100 > p500:
-            option_raise_100 = (max(guide_100, p200 + epsilon), p200, p500)
-
-            c200 = min(p100 - epsilon, p500 / target_500_200)
-            c200 = max(c200, p500 + epsilon)
-            option_lower_200 = None
-            if c200 < p100:
-                option_lower_200 = (p100, c200, p500)
-
-            selected = choose_option(
-                (p100, p200, p500),
-                [("p100", option_raise_100), ("p200", option_lower_200)],
-            )
+            selected = choose_candidate((p100, p200, p500), candidates)
             if selected is not None:
-                changed_key, new_values = selected
-                reason = (
-                    f"{prefix}: 100€ deductible price was not above 200€; changed {changed_key} "
-                    "with the smaller relative correction and better ratio fit."
-                )
+                reason, new_values = selected
 
-        elif p100 > p200 and p200 < p500 and p100 > p500:
-            c200 = clamp(p500 / target_500_200, p500 + epsilon, p100 - epsilon)
-            option_raise_200 = None if c200 is None else (p100, c200, p500)
-
-            c500 = min(p200 - epsilon, guide_500)
-            option_lower_500 = None
-            if c500 < p200:
-                option_lower_500 = (p100, p200, c500)
-
-            selected = choose_option(
-                (p100, p200, p500),
-                [("p200", option_raise_200), ("p500", option_lower_500)],
-            )
-            if selected is not None:
-                changed_key, new_values = selected
-                reason = (
-                    f"{prefix}: 500€ deductible price was not below 200€; changed {changed_key} "
-                    "with the smaller relative correction and better ratio fit."
-                )
-
-        if new_values == start_values and not is_strict_order(*start_values):
-            option_p100 = (max(guide_100, p200 + epsilon), p200, p500)
-
-            c200 = clamp(guide_200, p500 + epsilon, p100 - epsilon)
-            option_p200 = None if c200 is None else (p100, c200, p500)
-
-            c500 = clamp(guide_500, -float("inf"), p200 - epsilon)
-            option_p500 = None if c500 is None else (p100, p200, c500)
-
-            selected = choose_option(
-                (p100, p200, p500),
-                [("p100", option_p100), ("p200", option_p200), ("p500", option_p500)],
-            )
-            if selected is not None:
-                _, new_values = selected
-                reason = f"{prefix} used fallback candidate with minimal relative correction and ratio fit."
-
-        if not is_strict_order(*new_values):
+        if not (new_values[0] > new_values[1] > new_values[2]):
             new_values = fallback_repair(p100, p200, p500, (-float("inf"), -float("inf"), -float("inf")))
-            reason = f"{prefix} used deterministic fallback to satisfy strict deductible order."
+            reason = (
+                f"{label}: applied fallback correction to enforce strict deductible order (100€ > 200€ > 500€)."
+            )
 
         case_fixed_values = new_values
 
@@ -262,16 +235,28 @@ def validate_and_fix_prices(prices: dict[str, float]) -> dict:
 
         floored_values = apply_floors(*case_fixed_values, floors)
         if floored_values[0] != case_fixed_values[0]:
-            set_price(k100, floored_values[0], f"{prefix} 100€ must stay above its minimum hierarchy floor.")
+            set_price(
+                k100,
+                floored_values[0],
+                f"{label}: increased 100€ deductible price to stay above minimum hierarchy requirement.",
+            )
         if floored_values[1] != case_fixed_values[1]:
-            set_price(k200, floored_values[1], f"{prefix} 200€ must stay above its minimum hierarchy floor.")
+            set_price(
+                k200,
+                floored_values[1],
+                f"{label}: increased 200€ deductible price to stay above minimum hierarchy requirement.",
+            )
         if floored_values[2] != case_fixed_values[2]:
-            set_price(k500, floored_values[2], f"{prefix} 500€ must stay above its minimum hierarchy floor.")
+            set_price(
+                k500,
+                floored_values[2],
+                f"{label}: increased 500€ deductible price to stay above minimum hierarchy requirement.",
+            )
 
-        if not is_strict_order(*floored_values):
+        if not (floored_values[0] > floored_values[1] > floored_values[2]):
             post_floor_values = fallback_repair(*floored_values, floors)
             post_floor_reason = (
-                f"{prefix} deductible order was re-balanced after applying minimum hierarchy floors."
+                f"{label}: rebalanced deductible prices after applying hierarchy minimum requirements."
             )
             set_price(k100, post_floor_values[0], post_floor_reason)
             set_price(k200, post_floor_values[1], post_floor_reason)
