@@ -17,22 +17,48 @@ def validate_and_fix_prices(prices: dict[str, float]) -> dict:
     fixed = prices.copy()
     issues = []
 
-    # Summary of approach:
-    # 1) Sanitize input lightly (missing/invalid/non-positive values).
-    # 2) For each product group (Limited Casco, Casco), repair deductible ordering
-    #    by evaluating multiple candidate corrections and choosing the smallest
-    #    proportional change that preserves business ratios.
-    # 3) Enforce product hierarchy floors:
-    #       Limited Casco_* > mtpl
-    #       Casco_100 > Limited Casco_100,
-    #       Casco_200 > Limited Casco_200,
-    #       Casco_500 > Limited Casco_500
-    #    then re-balance deductible order if floors introduce conflicts.
-    # 4) Keep input as ground truth and avoid global optimization across products.
-    #    For that reason, extreme outlier scenarios (e.g., very high mtpl where
-    #    lowering mtpl could reduce total edits) are intentionally left out of scope.
-    #    Cross-product inversions (Limited Casco > Casco on same deductible) are
-    #    still corrected through hierarchy floor enforcement.
+    # Detailed summary of approach:
+    # 1) Lightweight input hardening:
+    #    - Missing expected keys are reported (checks for those fields are skipped).
+    #    - Invalid or non-positive values are replaced with a minimum positive value.
+    #    - Valid numeric inputs are normalized to 2-decimal monetary precision.
+    #
+    # 2) Deductible-order repair is done per product group independently
+    #    (Limited Casco first, then Casco):
+    #    - Target business relationships are modeled with ratios:
+    #         p200/p100 ~= 0.85
+    #         p500/p100 ~= 0.80
+    #         p500/p200 ~= 0.80/0.85
+    #    - If order is broken (need p100 > p200 > p500), multiple candidate fixes
+    #      are generated (change one price, align around p100/p200, etc.).
+    #    - Candidates are scored and the best valid one is selected.
+    #
+    # 3) Candidate scoring philosophy (minimal + proportional):
+    #    score = change_cost + 0.2 * order_error + 0.03 * changed_count
+    #    where:
+    #      - change_cost = sum of relative changes for p100, p200, p500
+    #      - order_error = deviation from target deductible ratios
+    #      - changed_count = how many fields actually changed after rounding
+    #    This favors smaller edits, better ratio alignment, and fewer touched values.
+    #
+    # 4) Product hierarchy enforcement (per same deductible level):
+    #    - Limited Casco_* must stay above mtpl.
+    #    - Casco_100 > Limited Casco_100,
+    #      Casco_200 > Limited Casco_200,
+    #      Casco_500 > Limited Casco_500.
+    #    After applying these floors, deductible order is checked again and
+    #    re-balanced if needed in next step.
+    #
+    # 5) Deterministic safety fallback:
+    #    - If no candidate produces strict deductible order, a fallback repair is
+    #      applied to guarantee p100 > p200 > p500.
+    #
+    # 6) Scope decisions:
+    #    - The input dictionary is treated as ground truth.
+    #    - No global optimization across products is performed (for example,
+    #      lowering extreme mtpl outliers to reduce total number of edits).
+    #    - The goal is robust, explainable, and proportionate correction of pricing
+    #      constraints defined in the task.
 
     epsilon = 0.01
     target_200_100 = 0.85
@@ -55,6 +81,12 @@ def validate_and_fix_prices(prices: dict[str, float]) -> dict:
         except (TypeError, ValueError):
             issues.append(
                 f"Invalid value for {key}; replaced with minimum allowed positive value ({epsilon:.2f})."
+            )
+            fixed[key] = epsilon
+            continue
+        if not math.isfinite(numeric_value):
+            issues.append(
+                f"Non-finite value for {key}; replaced with minimum allowed positive value ({epsilon:.2f})."
             )
             fixed[key] = epsilon
             continue
@@ -201,12 +233,10 @@ def validate_and_fix_prices(prices: dict[str, float]) -> dict:
             c200_up = clamp(p500 / target_500_200, p500 + epsilon, p100 - epsilon)
             c500_guide = clamp(guide_500, -float("inf"), p200 - epsilon)
             c500_down = clamp(p200 - epsilon, -float("inf"), p200 - epsilon)
+            p100_from_200 = max(p200 / target_200_100, p200 + epsilon)
+            p500_from_200 = min(p200 * target_500_200, p200 - epsilon)
 
             candidates = [
-                (
-                    f"{label}: swapped 100€ and 500€ deductible prices to restore correct deductible order (100€ > 200€ > 500€).",
-                    (p500, p200, p100),
-                ),
                 (
                     f"{label}: increased 100€ deductible price to keep it above 200€ and preserve deductible order.",
                     (max(guide_100, p200 + epsilon), p200, p500),
@@ -226,6 +256,10 @@ def validate_and_fix_prices(prices: dict[str, float]) -> dict:
                 (
                     f"{label}: adjusted 200€ and 500€ deductible prices to better match expected deductible relationships.",
                     (p100, guide_200, guide_500),
+                ),
+                (
+                    f"{label}: aligned 100€ and 500€ deductible prices around current 200€ level using expected deductible relationships.",
+                    (p100_from_200, p200, p500_from_200),
                 ),
                 (
                     f"{label}: set 500€ deductible price just below 200€ to restore strict order.",
