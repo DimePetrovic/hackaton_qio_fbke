@@ -457,7 +457,7 @@ def validate_and_fix_prices(prices: dict[str, float]) -> dict:
 
 # --- Local testing only ---
 example_prices = {
-    "mtpl": 4000,
+    "mtpl": 400,
     "limited_casco_100": 850,
     "limited_casco_200": 900,
     "limited_casco_500": 700,
