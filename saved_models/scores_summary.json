@@ -1,0 +1,57 @@
+{
+  "Insurer_A_price": {
+    "casco": 8.2095,
+    "limited_casco": 8.3619,
+    "mtpl": 7.4449
+  },
+  "Insurer_B_price": {
+    "casco": 8.4643,
+    "limited_casco": 7.112,
+    "mtpl": 8.2098
+  },
+  "Insurer_C_price": {
+    "casco": 7.8305,
+    "limited_casco": 7.3632,
+    "mtpl": 6.1394
+  },
+  "Insurer_D_price": {
+    "casco": 9.4972,
+    "limited_casco": 8.2122,
+    "mtpl": 8.2803
+  },
+  "Insurer_E_price": {
+    "casco": 18.3322,
+    "limited_casco": 14.2132,
+    "mtpl": 17.7609
+  },
+  "Insurer_F_price": {
+    "casco": 10.1473,
+    "limited_casco": 8.0873,
+    "mtpl": 10.3318
+  },
+  "Insurer_G_price": {
+    "casco": 5.1194,
+    "limited_casco": 5.6964,
+    "mtpl": 6.0436
+  },
+  "Insurer_H_price": {
+    "casco": 11.7722,
+    "limited_casco": 8.8385,
+    "mtpl": 7.9986
+  },
+  "Insurer_I_price": {
+    "casco": 13.8766,
+    "limited_casco": 9.7944,
+    "mtpl": 16.7348
+  },
+  "Insurer_J_price": {
+    "casco": 9.8056,
+    "limited_casco": 6.8831,
+    "mtpl": 6.0822
+  },
+  "Insurer_K_price": {
+    "casco": 9.8174,
+    "limited_casco": 11.9543,
+    "mtpl": 12.6222
+  }
+}
